@@ -2,6 +2,7 @@
 .gitignore
 src/
 out/
+test/
 **/*.js.map
 build
 node_modules

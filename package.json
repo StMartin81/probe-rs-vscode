@@ -54,6 +54,7 @@
         "login": "vsce login probe-rs",
         "run-prettier": "prettier --write .",
         "pretest": "npm run compile && npm run lint && npm run typecheck && prettier --check .",
+        "test": "esbuild test/remoteServer.test.js --bundle --platform=node --alias:vscode=./test/vscode.js --outfile=out/remoteServer.test.cjs && node --test out/remoteServer.test.cjs",
         "compile": "tsc -p ./",
         "lint": "eslint \"src/**/*.ts\"",
         "typecheck": "tsc -p tsconfig.json --noEmit",
