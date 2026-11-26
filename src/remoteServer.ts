@@ -9,14 +9,12 @@
  *      inferred from the configured `server`: an RPC URL keeps the dap-server
  *      local (only the probes are remote), and for a `host:port` dap-server the
  *      answer follows from whether that host is loopback.
- *   2) `uploadClientFiles` — when `remoteServerMode` is in effect, read and
- *      base64-encode the three client-local files referenced in the launch
- *      configuration (`programBinary`, `svdFile`, `chipDescriptionPath`) and
- *      attach them to the configuration as `programBinaryData` / `svdFileData` /
- *      `chipDescriptionData` so the server can materialize them to a temp file.
+ *   2) `prepareClientFiles` — validate symbol-file paths and, when
+ *      `remoteServerMode` is in effect, attach base64-encoded copies of
+ *      client-local files so the server can materialize them in a temp directory.
  *   3) `ProbeRsDebugAdapter` — wrap a [`DapTransport`] to the dap-server (stdio
- *      or TCP) with a `vscode.DebugAdapter` that forwards bytes verbatim except
- *      that any incoming `Source.path` is rewritten using the user's `sourceFileMap`
+ *      or TCP) with a `vscode.DebugAdapter` that checks symbol-file support
+ *      and rewrites incoming `Source.path` using the user's `sourceFileMap`
  *      (plus, for Rust users, an auto-detected entry that maps the synthetic
  *      `/rustc/<hash>/...` build prefix to the active toolchain's local sysroot).
  *      The DAP server itself no longer performs any source-path rewriting; that
@@ -30,6 +28,7 @@ import * as childProcess from 'child_process';
 import {promises as fs, existsSync} from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import type {DebugProtocol} from '@vscode/debugprotocol';
 import * as vscode from 'vscode';
 import {DapTransport} from './transport';
 
@@ -136,25 +135,21 @@ function stripPort(server: string): string {
 }
 
 /**
- * Read each of the client-local files that the server would otherwise need
- * filesystem access to, and stash their base64-encoded contents on the launch
- * configuration so that the server can decode them into its session-scoped
- * temp directory. Original path fields are left intact so they continue to
- * render in server log messages.
- *
- * No-op if `remoteServerMode` is not set on the configuration.
+ * Validate symbol-file paths in both modes. In remote mode, also stash the
+ * base64-encoded contents of client-local files on the configuration. Original
+ * paths are left intact so they continue to render in server log messages.
  */
-export async function uploadClientFiles(
+export async function prepareClientFiles(
     config: vscode.DebugConfiguration,
     logToConsole: (message: string) => void,
 ): Promise<void> {
-    if (!config.remoteServerMode) {
-        return;
-    }
-
     var cwd: string | undefined = config.cwd;
 
-    if (typeof config.chipDescriptionPath === 'string' && config.chipDescriptionPath.length > 0) {
+    if (
+        config.remoteServerMode &&
+        typeof config.chipDescriptionPath === 'string' &&
+        config.chipDescriptionPath.length > 0
+    ) {
         config.chipDescriptionData = await readAsBase64(
             absolutize(config.chipDescriptionPath, cwd),
             'chipDescriptionPath',
@@ -163,13 +158,39 @@ export async function uploadClientFiles(
     }
 
     var coreConfigs: any[] = Array.isArray(config.coreConfigs) ? config.coreConfigs : [];
-    for (var coreConfig of coreConfigs) {
+    for (var [coreConfigIndex, coreConfig] of coreConfigs.entries()) {
+        // This is transport data, not a launch.json setting. Always regenerate it.
+        delete coreConfig.symbolFilesData;
+        const symbolFiles = coreConfig.symbolFiles;
+        const field = `coreConfigs[${coreConfigIndex}].symbolFiles`;
+        if (symbolFiles !== undefined) {
+            if (!Array.isArray(symbolFiles)) {
+                throw new Error(`${field} must be an array of paths.`);
+            }
+            for (const [index, file] of symbolFiles.entries()) {
+                if (typeof file !== 'string' || file.trim().length === 0) {
+                    throw new Error(`${field}[${index}] must be a non-empty path string.`);
+                }
+            }
+        }
+        if (!config.remoteServerMode) {
+            continue;
+        }
         if (typeof coreConfig.programBinary === 'string' && coreConfig.programBinary.length > 0) {
             coreConfig.programBinaryData = await readAsBase64(
                 absolutize(coreConfig.programBinary, cwd),
                 `coreConfigs[${coreConfig.coreIndex ?? 0}].programBinary`,
                 logToConsole,
             );
+        }
+        if (symbolFiles?.length > 0) {
+            const data: string[] = [];
+            for (const [index, file] of symbolFiles.entries()) {
+                data.push(
+                    await readAsBase64(absolutize(file, cwd), `${field}[${index}]`, logToConsole),
+                );
+            }
+            coreConfig.symbolFilesData = data;
         }
         if (typeof coreConfig.svdFile === 'string' && coreConfig.svdFile.length > 0) {
             coreConfig.svdFileData = await readAsBase64(
@@ -347,8 +368,7 @@ function captureProcessOutput(command: string, args: string[]): Promise<string |
  * Bidirectional proxy between VSCode's DAP client and a `probe-rs dap-server`
  * reached over a [`DapTransport`] (stdio or TCP), used so the extension can
  * transparently rewrite incoming `Source.path` values using the configured
- * `SourceFileMap`. When the map is empty, this adapter is a verbatim byte
- * forwarder.
+ * `SourceFileMap` and reject configurations using symbol files on older servers.
  *
  * The DAP framing is the same `Content-Length: <n>\r\n\r\n<json>` envelope on
  * both transports, so we parse that here in order to surface fully decoded
@@ -361,6 +381,7 @@ export class ProbeRsDebugAdapter implements vscode.DebugAdapter {
 
     private inboundBuffer: Buffer = Buffer.alloc(0);
     private disposed: boolean = false;
+    private supportsSymbolFiles: boolean = false;
 
     constructor(
         private readonly transport: DapTransport,
@@ -382,6 +403,34 @@ export class ProbeRsDebugAdapter implements vscode.DebugAdapter {
     }
 
     handleMessage(message: vscode.DebugProtocolMessage): void {
+        const request = message as DebugProtocol.Request;
+        if (
+            !this.supportsSymbolFiles &&
+            request.type === 'request' &&
+            (request.command === 'launch' || request.command === 'attach')
+        ) {
+            const coreConfigs = request.arguments?.coreConfigs;
+            if (
+                Array.isArray(coreConfigs) &&
+                coreConfigs.some(
+                    (core) => Array.isArray(core?.symbolFiles) && core.symbolFiles.length > 0,
+                )
+            ) {
+                const response: DebugProtocol.Response = {
+                    seq: 0,
+                    type: 'response',
+                    // eslint-disable-next-line @typescript-eslint/naming-convention -- DAP wire field
+                    request_seq: request.seq,
+                    command: request.command,
+                    success: false,
+                    message:
+                        'This probe-rs dap-server does not support coreConfigs[].symbolFiles. Upgrade probe-rs or remove symbolFiles from the debug configuration.',
+                };
+                this._onDidSendMessage.fire(response);
+                return;
+            }
+        }
+
         var json = JSON.stringify(message);
         var encoded = Buffer.byteLength(json, 'utf8');
         this.transport.write(Buffer.from(`Content-Length: ${encoded}\r\n\r\n${json}`, 'utf8'));
@@ -419,6 +468,14 @@ export class ProbeRsDebugAdapter implements vscode.DebugAdapter {
                     error,
                 );
                 continue;
+            }
+
+            if (
+                body?.type === 'response' &&
+                body.command === 'initialize' &&
+                body.success === true
+            ) {
+                this.supportsSymbolFiles = body.body?.supportsSymbolFiles === true;
             }
 
             if (this.sourceFileMap.entries.length > 0) {

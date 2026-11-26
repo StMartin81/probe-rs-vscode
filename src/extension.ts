@@ -24,7 +24,7 @@ import {
     buildSourceFileMap,
     isRpcServer,
     resolveRemoteServerMode,
-    uploadClientFiles,
+    prepareClientFiles,
 } from './remoteServer';
 import {DapTransport, StdioDapTransport, TcpDapTransport} from './transport';
 
@@ -370,8 +370,7 @@ class ProbeRSDebugAdapterServerDescriptorFactory implements vscode.DebugAdapterD
         //     `/rustc/<hash>/...` build prefix to the active toolchain's local
         //     sysroot, so stepping into precompiled rustlib code resolves to a
         //     viewable file.
-        // Either source may be empty; if both are empty the adapter is a verbatim
-        // byte forwarder.
+        // Either source may be empty; if both are empty no paths are rewritten.
         var sourceFileMap: SourceFileMap;
         try {
             sourceFileMap = await buildSourceFileMap(
@@ -743,11 +742,8 @@ class ProbeRSConfigurationProvider implements DebugConfigurationProvider {
      *      `server` (see `resolveRemoteServerMode`). The resolved boolean is
      *      written back onto the configuration so the dap-server sees a definite
      *      value.
-     *   2) When `remoteServerMode` is in effect, read the three client-local
-     *      files referenced in the configuration (`programBinary`, `svdFile`,
-     *      `chipDescriptionPath`) and attach their base64-encoded contents to
-     *      the configuration so the server can materialize them into its
-     *      session-scoped temp directory.
+     *   2) Validate symbol-file paths and, in remote mode, attach base64-encoded
+     *      copies of client-local files for the server to materialize.
      */
     async resolveDebugConfigurationWithSubstitutedVariables(
         folder: WorkspaceFolder | undefined,
@@ -766,21 +762,19 @@ class ProbeRSConfigurationProvider implements DebugConfigurationProvider {
                     config.server ?? '(locally-managed dap-server)'
                 }`,
             );
-            try {
-                await uploadClientFiles(config, (message) =>
-                    logToConsole(`${ConsoleLogSources.console}: ${message}`),
-                );
-            } catch (error: any) {
-                var message = `Could not upload local files to remote dap-server: ${
-                    error?.message ?? error
-                }`;
-                logToConsole(
-                    `${ConsoleLogSources.error}: ${ConsoleLogSources.console}: ${message}`,
-                );
-                vscode.window.showErrorMessage(message);
-                // Returning `undefined` aborts the launch.
-                return undefined;
-            }
+        }
+        try {
+            await prepareClientFiles(config, (message) =>
+                logToConsole(`${ConsoleLogSources.console}: ${message}`),
+            );
+        } catch (error: any) {
+            const prefix = config.remoteServerMode
+                ? 'Could not prepare local files for remote dap-server'
+                : 'Invalid debug configuration';
+            const message = `${prefix}: ${error?.message ?? error}`;
+            logToConsole(`${ConsoleLogSources.error}: ${ConsoleLogSources.console}: ${message}`);
+            vscode.window.showErrorMessage(message);
+            return undefined;
         }
         return config;
     }

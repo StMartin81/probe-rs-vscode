@@ -324,6 +324,14 @@
                                             "type": "string",
                                             "description": "The path (relative to `cwd` or absolute) to the binary for your target firmware"
                                         },
+                                        "symbolFiles": {
+                                            "type": "array",
+                                            "description": "Additional ELF files to load for debug symbols only, not for flashing. Paths are absolute or relative to `cwd`. In remote server mode the extension uploads these files.",
+                                            "items": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            }
+                                        },
                                         "svdFile": {
                                             "type": "string",
                                             "description": "The path (relative to `cwd` or absolute) to the CMSIS-SVD file for your target core"
@@ -539,6 +547,14 @@
                                         "programBinary": {
                                             "type": "string",
                                             "description": "The path (relative to `cwd` or absolute) to the binary for your target firmware"
+                                        },
+                                        "symbolFiles": {
+                                            "type": "array",
+                                            "description": "Additional ELF files to load for debug symbols only, not for flashing. Paths are absolute or relative to `cwd`. In remote server mode the extension uploads these files.",
+                                            "items": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            }
                                         },
                                         "svdFile": {
                                             "type": "string",
