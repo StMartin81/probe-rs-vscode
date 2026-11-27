@@ -4,16 +4,13 @@ How the extension is published to the [VS Code Marketplace](https://marketplace.
 
 ## Cutting a release
 
-1. Bump `version` in [package.json](package.json) (e.g. `0.26.0` → `0.26.1`). This is what `vsce` actually publishes — it reads the version from package.json, not from the git tag.
+1. Run `npm version <version> --no-git-tag-version` to bump `package.json` and `package-lock.json` without creating a tag.
 2. Commit and merge to `master`.
-3. Create a new GitHub Release at <https://github.com/probe-rs/vscode/releases/new>:
-   - **Tag**: `vX.Y.Z` matching the package.json version, prefixed with `v` (e.g. `v0.26.1`). Create the tag fresh from this page — don't push a tag separately.
-   - **Target**: `master`. The tag will be created on `master` HEAD.
-   - **Release notes**: written or auto-generated.
-   - Click **Publish release** (not "Save draft" — drafts do not trigger the workflow).
-4. The publish workflow ([.github/workflows/publish.yml](.github/workflows/publish.yml)) starts and pauses for approval in the `marketplace` environment. Approve in the [Actions tab](https://github.com/probe-rs/vscode/actions).
-5. Two parallel jobs run: `publish-vsce` (VS Code Marketplace) and `publish-ovsx` (Open VSX). Each succeeds or fails independently — a transient failure in one does not block the other.
-6. Verify both registries show the new version.
+3. In the [Actions tab](https://github.com/probe-rs/vscode/actions), run **Prepare GitHub Release** on `master`. It packages the extension and creates a draft GitHub Release with generated notes and the `.vsix` attached. The draft targets the exact commit that was packaged. Don't push a tag separately.
+4. Open the draft on the [Releases page](https://github.com/probe-rs/vscode/releases), review the notes, confirm the `.vsix` is attached, and click **Publish release**. If packaging succeeded but asset upload failed, check for an incomplete draft before retrying.
+5. The publish workflow ([.github/workflows/publish.yml](.github/workflows/publish.yml)) starts and pauses for approval in the `marketplace` environment. Approve in the [Actions tab](https://github.com/probe-rs/vscode/actions).
+6. Two parallel jobs run: `publish-vsce` (VS Code Marketplace) and `publish-ovsx` (Open VSX). Each succeeds or fails independently — a transient failure in one does not block the other.
+7. Verify both registries show the new version.
 
 ### Tag and version: who owns what
 
@@ -22,7 +19,7 @@ How the extension is published to the [VS Code Marketplace](https://marketplace.
 | `version` in [package.json](package.json) | The version `vsce` and `ovsx` publish to the marketplaces. |
 | Git tag `vX.Y.Z` on the release | The commit the workflow checks out and runs against. Also the rule the `marketplace` environment matches against to authorize the run. |
 
-The two **must** match — there's no automation enforcing this today, so it's a manual discipline. The release tag is what the workflow runs from; the package.json version is what gets published. Mismatched values produce confusing failures (e.g. workflow runs from `v0.26.1` but publishes `0.26.0`).
+The [prepare workflow](.github/workflows/prepare-release.yml) derives the draft's tag from `package.json` and refuses to use an existing tag. Do not change the tag or target when publishing the draft.
 
 ## Architecture
 

@@ -1,0 +1,43 @@
+name: Prepare GitHub Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: prepare-release
+
+jobs:
+  prepare-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Package the extension
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          tag="v$version"
+          git check-ref-format "refs/tags/$tag"
+          vsix="$RUNNER_TEMP/probe-rs-debugger-$version.vsix"
+          npm run package -- --out "$vsix"
+          unzip -tq "$vsix"
+          printf 'RELEASE_TAG=%s\nRELEASE_VSIX=%s\n' "$tag" "$vsix" >> "$GITHUB_ENV"
+      - name: Create a draft release with the VSIX
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # GitHub ignores --target if the tag already exists.
+          refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" --jq '.[].ref')
+          if grep -Fxq "refs/tags/$RELEASE_TAG" <<< "$refs"; then
+            echo "Release tag $RELEASE_TAG already exists; bump the version before preparing a release." >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" "$RELEASE_VSIX" \
+            --draft --generate-notes --target "$GITHUB_SHA"
